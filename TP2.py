@@ -217,10 +217,20 @@ class Router(object):
 
             # Normal IP packets can reach after this line, the router needs to verify if the IP is in his ARP cache
             elif self.had_ip_info(packet.payload.dstip):
-                return
+                self.resend_packet(packet_in, self.ip_to_port[packet.payload.dstip])
             # IP packet is not in the ARP cache
             else:
-                # send_arp_request(self, protosrc, protodst, hwsrc)
+                # message_queue_for_ARP_reply:
+                # A nested dictionary with IP destiny and IPV4 packed_in
+                # ('packet.payload.protodst|dstip', 'packet_in') types.
+                # nested_dict = { 'dstipA': {1: 'packet_in1', 2: 'packet_in2'},
+                #                 'dstipB': {1: 'packet_in1'}, 2: 'packet_in2'}
+                # Creates nested dictionary for message queue
+                if packet.payload.dstip not in self.message_queue_for_ARP_reply:
+                    self.message_queue_for_ARP_reply[packet.payload.dstip] = {}
+                len_message_queque_ip = len(self.message_queue_for_ARP_reply[packet.payload.dstip])
+                self.message_queue_for_ARP_reply[packet.payload.dstip][len_message_queque_ip] = packet_in
+                # Send ARP request to obtain MAC address of the destiny IP
                 self.send_arp_request(packet.payload.srcip, packet.payload.dstip)
 
     def act_like_router(self, packet, packet_in):
