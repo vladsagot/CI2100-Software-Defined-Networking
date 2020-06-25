@@ -65,7 +65,7 @@ class Router(object):
     def arp_cache_handler(self, protodst):
         log.debug("Send IPV4 packets in ARP waiting list to %s" % protodst)
         for packet_in_id in self.message_queue_for_ARP_reply[protodst]:
-            self.resend_packet(self.message_queue_for_ARP_reply[protodst][packet_in_id], self.ip_to_port[protodst])
+            self.send_ip_packet(self.message_queue_for_ARP_reply[protodst][packet_in_id], protodst)
             #########################################
             # Check and chage for IP sender is best #
             #########################################
@@ -202,9 +202,34 @@ class Router(object):
                 or ip_address in default_gateway[2]
                 or ip_address in default_gateway[3])
 
+    # Fuente: https://noxrepo.github.io/pox-doc/html/#set-ethernet-source-or-destination-address
+    # https://noxrepo.github.io/pox-doc/html/#example-installing-a-table-entry
+    # https://openflow.stanford.edu/display/ONL/POX+Wiki.html
+    def send_ip_packet(self, packet_in, dstip):
+        msg = of.ofp_packet_out()
+        msg.data = packet_in
+        action_outport = of.ofp_action_output(port=self.ip_to_port[dstip])
+        msg.actions.append(action_outport)
+        action_hwdst = of.ofp_action_dl_addr.set_dst(EthAddr(self.arp_cache[dstip]))
+        msg.actions.append(action_hwdst)
+        self.connection.send(msg)
+        log.debug("SEND: IP packet to %s, PORT %s" % dstip, self.ip_to_port[dstip])
+        #################
+        # Installs flow #
+        #################
+        msg = of.ofp_flow_mod()
+        # Match destiny IP and packet IP type
+        msg.match.nw_dst = IPAddr(dstip)
+        msg.match.dl_type = 0x800  # dl_type = 0x800 (IPv4)
+        # Generate same route created before and adds to flowtable
+        action_outport = of.ofp_action_output(port=self.ip_to_port[dstip])
+        msg.actions.append(action_outport)
+        action_hwdst = of.ofp_action_dl_addr.set_dst(EthAddr(self.arp_cache[dstip]))
+        msg.actions.append(action_hwdst)
+        self.connection.send(msg)
+
     # Using IPV4 packet payload
     def ip_inbox_handler(self, packet, packet_in):
-        ip = IPAddr(packet.payload.dstip)
         # Checks if a given IP is unreachable
         if not self.ip_is_reachable(packet.payload.dstip):
             self.icmp_unreachable(packet, packet_in)
@@ -217,7 +242,7 @@ class Router(object):
 
             # Normal IP packets can reach after this line, the router needs to verify if the IP is in his ARP cache
             elif self.had_ip_info(packet.payload.dstip):
-                self.resend_packet(packet_in, self.ip_to_port[packet.payload.dstip])
+                self.send_ip_packet(packet_in, packet.payload.dstip)
             # IP packet is not in the ARP cache
             else:
                 # message_queue_for_ARP_reply:
@@ -230,6 +255,7 @@ class Router(object):
                     self.message_queue_for_ARP_reply[packet.payload.dstip] = {}
                 len_message_queque_ip = len(self.message_queue_for_ARP_reply[packet.payload.dstip])
                 self.message_queue_for_ARP_reply[packet.payload.dstip][len_message_queque_ip] = packet_in
+                log.debug("Add to massage queue: IP %s POS %s" % packet.payload.dstip, len_message_queque_ip)
                 # Send ARP request to obtain MAC address of the destiny IP
                 self.send_arp_request(packet.payload.srcip, packet.payload.dstip)
 
