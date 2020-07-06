@@ -126,18 +126,18 @@ class Router(object):
         arp_request = pkt.arp()
         # MAC adresses
         # Actual router MAC
-        arp_request.hwsrc = self.router_mac_address
+        arp_request.hwsrc = EthAddr(self.router_mac_address)
         arp_request.hwdst = pkt.ETHER_BROADCAST
         # Creates ARP REQUEST
         arp_request.opcode = pkt.arp.REQUEST
         # IP adresses
-        arp_request.protosrc = protosrc
-        arp_request.protodst = protodst
+        arp_request.protosrc = IPAddr(protosrc)
+        arp_request.protodst = IPAddr(protodst)
         # Ethernet packet
         ether = pkt.ethernet()
         ether.type = pkt.ethernet.ARP_TYPE
         ether.dst = pkt.ETHER_BROADCAST
-        ether.src = self.router_mac_address
+        ether.src = EthAddr(self.router_mac_address)
         ether.payload = arp_request
         # Router sends the ARP Request to a host
         self.resend_packet(ether, of.ofp_port_rev_map['OFPP_FLOOD'])
@@ -213,9 +213,9 @@ class Router(object):
     def ip_is_reachable(ip_address):
         ip_address = str(ip_address)
         ip = IPAddr(ip_address)
-        return (ip.inNetwork(route_table[1]['subnetIP'], 24)
-                or ip.inNetwork(route_table[2]['subnetIP'], 24)
-                or ip.inNetwork(route_table[3]['subnetIP'], 24))
+        return (IPAddr(ip.inNetwork(route_table[1]['subnetIP']), 24)
+                or IPAddr(ip.inNetwork(route_table[2]['subnetIP']), 24)
+                or IPAddr(ip.inNetwork(route_table[3]['subnetIP']), 24))
 
     @staticmethod
     def ip_packet_is_from_router(ip_address):
@@ -275,9 +275,9 @@ class Router(object):
                 #                 'dstipB': {1: 'packet_in1'}, 2: 'packet_in2'}
                 # Creates nested dictionary for message queue
                 if packet.payload.dstip not in self.message_queue_for_ARP_reply:
-                    self.message_queue_for_ARP_reply[packet.payload.dstip] = {}
-                len_message_queque_ip = len(self.message_queue_for_ARP_reply[packet.payload.dstip])
-                self.message_queue_for_ARP_reply[packet.payload.dstip][len_message_queque_ip] = packet_in
+                    self.message_queue_for_ARP_reply[str(packet.payload.dstip)] = {}
+                len_message_queque_ip = len(self.message_queue_for_ARP_reply[str(packet.payload.dstip)])
+                self.message_queue_for_ARP_reply[str(packet.payload.dstip)][len_message_queque_ip] = packet_in
                 log.debug(
                     "Add to massage queue: IP %s POS %s" % (str(packet.payload.dstip), str(len_message_queque_ip)))
                 # Send ARP request to obtain MAC address of the destiny IP
