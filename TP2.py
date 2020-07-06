@@ -24,9 +24,9 @@ route_table = {
 }
 
 default_gateway = {
-    1: {'10.0.1.1'},
-    2: {'10.0.2.1'},
-    3: {'10.0.3.1'}
+    1: '10.0.1.1',
+    2: '10.0.2.1',
+    3: '10.0.3.1'
 }
 
 
@@ -40,15 +40,23 @@ class Router(object):
         self.router_mac_address = EthAddr("22:22:22:22:22:22")
 
         # Dictionary of { destiny IP: output PORT }
-        self.ip_to_port = {}
+        self.ip_to_port = {default_gateway[1]: 1,
+                           default_gateway[2]: 2,
+                           default_gateway[3]: 3}
         # arp_cache:
         # A dictionary with a host source IP and source MAC adresses (IPV4, MAC)
-        self.arp_cache = {}
+        self.arp_cache = {default_gateway[1]: str(self.router_mac_address),
+                          default_gateway[2]: str(self.router_mac_address),
+                          default_gateway[3]: str(self.router_mac_address)}
         # message_queue_for_ARP_reply:
         # A nested dictionary with IP destiny and IPV4 packed_in ('packet.payload.protodst|dstip', 'packet_in') types.
         # nested_dict = { 'dstipA': {1: 'packet_in1', 2: 'packet_in2'},
         #                 'dstipB': {1: 'packet_in1'}, 2: 'packet_in2'}
         self.message_queue_for_ARP_reply = {}
+
+    def print_arp_cache(self):
+        for i in self.arp_cache:
+            print("ARP CACHE | IP: " + str(i) + " MAC: " + str(self.arp_cache[i]))
 
     def resend_packet(self, packet_in, out_port):
         msg = of.ofp_packet_out()
@@ -63,8 +71,10 @@ class Router(object):
     # message_queue_for_ARP_reply:
     # A dictionary with IP destiny and IPV4 packed_in ('packet.payload.protodst|dstip', 'packet_in') types.
     def arp_cache_handler(self, protodst):
-        log.debug("Send IPV4 packets in ARP waiting list to %s" % protodst)
+        protodst = str(protodst)
+        log.debug("Send IPV4 packets in ARP waiting list to %s" % (str(protodst)))
         for packet_in_id in self.message_queue_for_ARP_reply[protodst]:
+            log.debug("packet_in_id %s" % str(packet_in_id))
             self.send_ip_packet(self.message_queue_for_ARP_reply[protodst][packet_in_id], protodst)
             #########################################
             # Check and chage for IP sender is best #
@@ -72,22 +82,28 @@ class Router(object):
         del self.message_queue_for_ARP_reply[protodst]
 
     def had_ip_info(self, ip_address):
+        ip_address = str(ip_address)
         return ip_address in self.arp_cache and ip_address in self.ip_to_port
 
     def add_ip_info(self, ip_address, mac_address, port):
-        log.debug("Add: IP %s, MAC %s into arp_cache" % ip_address, mac_address)
-        log.debug("Add: IP %s, PORT %s into ip_to_port" % ip_address, port)
+        ip_address = str(ip_address)
+        mac_address = str(mac_address)
+        port = int(port)
+        log.debug("Add: IP %s, MAC %s into arp_cache" % (str(ip_address), str(mac_address)))
+        log.debug("Add: IP %s, PORT %s into ip_to_port" % (str(ip_address), str(port)))
         self.arp_cache[ip_address] = mac_address
         self.ip_to_port[ip_address] = port
 
+    # If IP had messages in queue, then return True
     def ip_in_message_queue(self, ip_address):
-        return ip_address in self.message_queue_for_ARP_reply[ip_address]
+        ip_address = str(ip_address)
+        return ip_address in self.message_queue_for_ARP_reply
 
     def send_arp_reply(self, packet, packet_in):
         arp_reply = pkt.arp()
         # MAC adresses
         # ARP cache MAC
-        arp_reply.hwsrc = self.arp_cache[packet.payload.protodst]
+        arp_reply.hwsrc = EthAddr(self.arp_cache[str(packet.payload.protodst)])
         arp_reply.hwdst = packet.payload.hwsrc
         # Creates ARP REPLY
         arp_reply.opcode = pkt.arp.REPLY
@@ -97,14 +113,16 @@ class Router(object):
         # Ethernet packet
         ether = pkt.ethernet()
         ether.type = pkt.ethernet.ARP_TYPE
-        ether.dst = packet.src
-        ether.src = self.arp_cache[packet.payload.protodst]
+        ether.dst = packet.payload.hwsrc
+        ether.src = EthAddr(self.arp_cache[str(packet.payload.protodst)])
         ether.payload = arp_reply
         # Router sends the ARP Reply to a host
         self.resend_packet(ether, packet_in.in_port)
-        log.debug("Router send arp.REPLY: IP %s, MAC %s" % arp_reply.protodst, arp_reply.hwdst)
+        log.debug("Router send arp.REPLY: TO | IP %s, MAC %s " % (str(arp_reply.protodst), str(ether.dst)))
 
     def send_arp_request(self, protosrc, protodst):
+        protosrc = str(protosrc)
+        protodst = str(protodst)
         arp_request = pkt.arp()
         # MAC adresses
         # Actual router MAC
@@ -122,35 +140,35 @@ class Router(object):
         ether.src = self.router_mac_address
         ether.payload = arp_request
         # Router sends the ARP Request to a host
-        self.resend_packet(ether, of.OFPP_FLOOD)
-        log.debug("Router send arp.REQUEST: IP %s, MAC %s" % arp_request.protodst, arp_request.hwdst)
+        self.resend_packet(ether, of.ofp_port_rev_map['OFPP_FLOOD'])
+        log.debug("Router send arp.REQUEST: IP %s, MAC %s" % (str(arp_request.protodst), str(arp_request.hwdst)))
 
     # Using ARP packet payload
     # Fuente: https://noxrepo.github.io/pox-doc/html/#example-arp-messages
     def arp_inbox_handler(self, packet, packet_in):
         # Writes or rewrites the ARP cache with source IP and source MAC adresses
         # Writes or rewrites the ip_to_port with source IP and port
-        if not self.had_ip_info(packet.payload.protosrc):
-            self.add_ip_info(packet.payload.protosrc, packet.payload.hwsrc, packet_in.in_port)
+        if not self.had_ip_info(str(packet.payload.protosrc)):
+            self.add_ip_info(str(packet.payload.protosrc), str(packet.payload.hwsrc), packet_in.in_port)
             # The IP, MAC and PORT of input packet are know, we can clear message_queue_for_ARP_reply with this.
-            if self.ip_in_message_queue(packet.payload.protosrc):
-                self.arp_cache_handler(packet.payload.protosrc)
+            if self.ip_in_message_queue(str(packet.payload.protosrc)):
+                self.arp_cache_handler(str(packet.payload.protosrc))
 
         if packet.payload.opcode == pkt.arp.REQUEST:
             # The router is consulted by a host, to obtain a MAC address of a certain IP address
             # ARP REQUEST packet
-            # If the router had de MAC address, then creates ARP.REPLY
-            if self.had_ip_info(packet.payload.protosrc):
+            # If the router had the MAC address, then creates ARP.REPLY
+            if self.had_ip_info(str(packet.payload.protodst)):
                 self.send_arp_reply(packet, packet_in)
             # If the router doesn't have the MAC address, ask to other hosts
             else:
-                self.resend_packet(packet_in, of.OFPP_FLOOD)
+                self.resend_packet(packet_in, of.ofp_port_rev_map['OFPP_FLOOD'])
         elif packet.payload.opcode == pkt.arp.REPLY:
-            log.debug("Router %s receives arp.REPLY packet." % packet.payload.protodst)
+            log.debug("Router %s receives arp.REPLY packet." % (str(packet.payload.protodst)))
 
     # If network is out of scope, it sends an ICMP unreachable packet
     def icmp_unreachable(self, packet, packet_in):
-        log.debug("The IP %s is unreachable." % packet.payload.dstip)
+        log.debug("The IP %s is unreachable." % (str(packet.payload.dstip)))
         ip_packet = packet.payload
         icmp_packet = ip_packet.payload
         icmp_reply = pkt.icmp()
@@ -174,7 +192,7 @@ class Router(object):
         ip_packet = packet.payload
         icmp_packet = ip_packet.payload
         if icmp_packet.type == pkt.TYPE_ECHO_REQUEST:
-            log.debug("Send ICMP ECHO_REPLY to IP %s" % packet.payload.dstip)
+            log.debug("Send ICMP ECHO_REPLY to IP %s" % (str(packet.payload.dstip)))
             icmp_reply = pkt.icmp()
             icmp_reply.type = pkt.TYPE_ECHO_REPLY
             icmp_reply.payload = icmp_packet.payload
@@ -191,13 +209,17 @@ class Router(object):
             self.resend_packet(eth_reply, packet_in.in_port)
 
     # Checks if a given IP is reachable in the given scenario
-    def ip_is_reachable(self, ip_address):
+    @staticmethod
+    def ip_is_reachable(ip_address):
+        ip_address = str(ip_address)
         ip = IPAddr(ip_address)
         return (ip.inNetwork(route_table[1]['subnetIP'], 24)
                 or ip.inNetwork(route_table[2]['subnetIP'], 24)
                 or ip.inNetwork(route_table[3]['subnetIP'], 24))
 
-    def ip_packet_is_from_router(self, ip_address):
+    @staticmethod
+    def ip_packet_is_from_router(ip_address):
+        ip_address = str(ip_address)
         return (ip_address in default_gateway[1]
                 or ip_address in default_gateway[2]
                 or ip_address in default_gateway[3])
@@ -206,6 +228,7 @@ class Router(object):
     # https://noxrepo.github.io/pox-doc/html/#example-installing-a-table-entry
     # https://openflow.stanford.edu/display/ONL/POX+Wiki.html
     def send_ip_packet(self, packet_in, dstip):
+        dstip = str(dstip)
         msg = of.ofp_packet_out()
         msg.data = packet_in
         action_outport = of.ofp_action_output(port=self.ip_to_port[dstip])
@@ -213,7 +236,7 @@ class Router(object):
         action_hwdst = of.ofp_action_dl_addr.set_dst(EthAddr(self.arp_cache[dstip]))
         msg.actions.append(action_hwdst)
         self.connection.send(msg)
-        log.debug("SEND: IP packet to %s, PORT %s" % dstip, self.ip_to_port[dstip])
+        log.debug("SEND: IP packet to %s, PORT %s" % (str(dstip), str(self.ip_to_port[dstip])))
         #################
         # Installs flow #
         #################
@@ -234,7 +257,7 @@ class Router(object):
         if not self.ip_is_reachable(packet.payload.dstip):
             self.icmp_unreachable(packet, packet_in)
         else:
-            log.debug("The IP %s is reachable." % packet.payload.dstip)
+            log.debug("The IP %s is reachable." % (str(packet.payload.dstip)))
             # Checks if ICMP is for the router IP interfaces (default gateways)
             if (packet.payload.protocol == pkt.ipv4.ICMP_PROTOCOL
                     and self.ip_packet_is_from_router(packet.payload.dstip)):
@@ -255,16 +278,19 @@ class Router(object):
                     self.message_queue_for_ARP_reply[packet.payload.dstip] = {}
                 len_message_queque_ip = len(self.message_queue_for_ARP_reply[packet.payload.dstip])
                 self.message_queue_for_ARP_reply[packet.payload.dstip][len_message_queque_ip] = packet_in
-                log.debug("Add to massage queue: IP %s POS %s" % packet.payload.dstip, len_message_queque_ip)
+                log.debug(
+                    "Add to massage queue: IP %s POS %s" % (str(packet.payload.dstip), str(len_message_queque_ip)))
                 # Send ARP request to obtain MAC address of the destiny IP
                 self.send_arp_request(packet.payload.srcip, packet.payload.dstip)
 
     def act_like_router(self, packet, packet_in):
         if packet.type == pkt.ethernet.ARP_TYPE:
-            log.debug("ARP packet received from %s to %s" % packet.payload.protosrc, packet.payload.protodst)
+            log.debug(
+                "ARP packet received from %s to %s" % (str(packet.payload.protosrc), str(packet.payload.protodst)))
             self.arp_inbox_handler(packet, packet_in)
         elif packet.type == pkt.ethernet.IP_TYPE:
-            log.debug("IPV4 packet received from %s to %s" % packet.payload.protosrc, packet.payload.protodst)
+            log.debug(
+                "IPV4 packet received from %s to %s" % (str(packet.payload.srcip), str(packet.payload.dstip)))
             self.ip_inbox_handler(packet, packet_in)
 
     def _handle_PacketIn(self, event):
@@ -278,7 +304,7 @@ class Router(object):
 
 def launch():
     def start_router(event):
-        log.debug("Controlling %s" % (event.connection,))
+        log.debug("Controlling %s" % (str(event.connection, )))
         Router(event.connection)
 
     core.openflow.addListenerByName("ConnectionUp", start_router)
