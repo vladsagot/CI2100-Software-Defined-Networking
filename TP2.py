@@ -6,18 +6,18 @@ from pox.lib.addresses import EthAddr, IPAddr
 log = core.getLogger()
 
 route_table = {
-    1: {'subnet': '10.0.1.100/24',
-        'subnetIP': '10.0.1.100',
+    1: {'subnet': '10.0.1.0/24',
+        'subnetIP': '10.0.1.0',
         'interfaceName': 's1-eth1',
         'interfaceIP': '10.0.1.1',
         'switchPort': 1},
-    2: {'subnet': '10.0.2.100/24',
-        'subnetIP': '10.0.2.100',
+    2: {'subnet': '10.0.2.0/24',
+        'subnetIP': '10.0.2.0',
         'interfaceName': 's1-eth2',
         'interfaceIP': '10.0.2.1',
         'switchPort': 3},
-    3: {'subnet': '10.0.3.100/24',
-        'subnetIP': '10.0.3.100',
+    3: {'subnet': '10.0.3.0/24',
+        'subnetIP': '10.0.3.0',
         'interfaceName': 's1-eth3',
         'interfaceIP': '10.0.3.1',
         'switchPort': 2}
@@ -60,7 +60,7 @@ class Router(object):
 
     def resend_packet(self, packet_in, out_port):
         msg = of.ofp_packet_out()
-        msg.data = packet_in
+        msg.data = packet_in.pack()
         action = of.ofp_action_output(port=out_port)
         msg.actions.append(action)
         self.connection.send(msg)
@@ -72,7 +72,7 @@ class Router(object):
     # A dictionary with IP destiny and IPV4 packed_in ('packet.payload.protodst|dstip', 'packet_in') types.
     def arp_cache_handler(self, protodst):
         protodst = str(protodst)
-        log.debug("Send IPV4 packets in ARP waiting list to %s" % (str(protodst)))
+        log.debug("ARP CACHE HANDLER: Send IPV4 packets in ARP waiting list to %s" % (str(protodst)))
         for packet_in_id in self.message_queue_for_ARP_reply[protodst]:
             log.debug("packet_in_id %s" % str(packet_in_id))
             self.send_ip_packet(self.message_queue_for_ARP_reply[protodst][packet_in_id], protodst)
@@ -170,21 +170,26 @@ class Router(object):
     def icmp_unreachable(self, packet, packet_in):
         log.debug("The IP %s is unreachable." % (str(packet.payload.dstip)))
         ip_packet = packet.payload
-        icmp_packet = ip_packet.payload
+
+        unreach_packet = pkt.unreach()
+        unreach_packet.payload = ip_packet
+
         icmp_reply = pkt.icmp()
-        icmp_reply.code = pkt.CODE_UNREACH_NET
         icmp_reply.type = pkt.TYPE_DEST_UNREACH
-        icmp_reply.payload = icmp_packet.payload
+        icmp_reply.payload = unreach_packet
+
         ipv4_reply = pkt.ipv4()
         ipv4_reply.srcip = ip_packet.dstip
         ipv4_reply.dstip = ip_packet.srcip
         ipv4_reply.protocol = pkt.ipv4.ICMP_PROTOCOL
         ipv4_reply.payload = icmp_reply
+
         eth_reply = pkt.ethernet()
         eth_reply.type = pkt.ethernet.IP_TYPE
         eth_reply.src = packet.dst
         eth_reply.dst = packet.src
         eth_reply.payload = ipv4_reply
+
         self.resend_packet(eth_reply, packet_in.in_port)
 
     # If the ICMP ECHO_REQUEST packet is for the router, creates an ECHO_REPLY
@@ -213,9 +218,9 @@ class Router(object):
     def ip_is_reachable(ip_address):
         ip_address = str(ip_address)
         ip = IPAddr(ip_address)
-        return (IPAddr(ip.inNetwork(route_table[1]['subnetIP']), 24)
-                or IPAddr(ip.inNetwork(route_table[2]['subnetIP']), 24)
-                or IPAddr(ip.inNetwork(route_table[3]['subnetIP']), 24))
+        return ((ip.inNetwork(IPAddr(route_table[1]['subnetIP']), 24))
+                or (ip.inNetwork(IPAddr(route_table[2]['subnetIP']), 24))
+                or (ip.inNetwork(IPAddr(route_table[3]['subnetIP']), 24)))
 
     @staticmethod
     def ip_packet_is_from_router(ip_address):
@@ -254,18 +259,18 @@ class Router(object):
     # Using IPV4 packet payload
     def ip_inbox_handler(self, packet, packet_in):
         # Checks if a given IP is unreachable
-        if not self.ip_is_reachable(packet.payload.dstip):
+        if not self.ip_is_reachable(str(packet.payload.dstip)):
             self.icmp_unreachable(packet, packet_in)
         else:
             log.debug("The IP %s is reachable." % (str(packet.payload.dstip)))
             # Checks if ICMP is for the router IP interfaces (default gateways)
             if (packet.payload.protocol == pkt.ipv4.ICMP_PROTOCOL
-                    and self.ip_packet_is_from_router(packet.payload.dstip)):
+                    and self.ip_packet_is_from_router(str(packet.payload.dstip))):
                 self.icmp_handler(packet, packet_in)
 
             # Normal IP packets can reach after this line, the router needs to verify if the IP is in his ARP cache
-            elif self.had_ip_info(packet.payload.dstip):
-                self.send_ip_packet(packet_in, packet.payload.dstip)
+            elif self.had_ip_info(str(packet.payload.dstip)):
+                self.send_ip_packet(packet_in, str(packet.payload.dstip))
             # IP packet is not in the ARP cache
             else:
                 # message_queue_for_ARP_reply:
@@ -274,14 +279,14 @@ class Router(object):
                 # nested_dict = { 'dstipA': {1: 'packet_in1', 2: 'packet_in2'},
                 #                 'dstipB': {1: 'packet_in1'}, 2: 'packet_in2'}
                 # Creates nested dictionary for message queue
-                if packet.payload.dstip not in self.message_queue_for_ARP_reply:
+                if str(packet.payload.dstip) not in self.message_queue_for_ARP_reply:
                     self.message_queue_for_ARP_reply[str(packet.payload.dstip)] = {}
                 len_message_queque_ip = len(self.message_queue_for_ARP_reply[str(packet.payload.dstip)])
                 self.message_queue_for_ARP_reply[str(packet.payload.dstip)][len_message_queque_ip] = packet_in
                 log.debug(
-                    "Add to massage queue: IP %s POS %s" % (str(packet.payload.dstip), str(len_message_queque_ip)))
+                    "Add to message queue: IP %s POS %s" % (str(packet.payload.dstip), str(len_message_queque_ip)))
                 # Send ARP request to obtain MAC address of the destiny IP
-                self.send_arp_request(packet.payload.srcip, packet.payload.dstip)
+                self.send_arp_request(str(packet.payload.srcip), str(packet.payload.dstip))
 
     def act_like_router(self, packet, packet_in):
         if packet.type == pkt.ethernet.ARP_TYPE:
