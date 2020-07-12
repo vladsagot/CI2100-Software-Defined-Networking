@@ -69,7 +69,6 @@ class Router(object):
         msg.actions.append(action)
         self.connection.send(msg)
 
-    # NEED: Install flow where this put packets in waiting list
     # Cleans cache sending packets that have a valid source IP in ARP cache.
     # Takes the MAC address from the ARP cache.
     # message_queue_for_ARP_reply:
@@ -272,20 +271,38 @@ class Router(object):
         return ip_associated, tcp_port_associated
 
     # Resolve PAT to a packet from subnet 3
-    def send_tcp_ip_packet_from_subnet_3(self, packet_object, dstip):
+    def send_tcp_ip_packet_from_subnet_3(self, packet_object):
         packet = packet_object.packet
         packet_in = packet_object.packet_in
         dsttcpport = int(packet.payload.payload.dstport)
         dstip, dsttcpport = self.get_associated_info_to_tcp_port_from_subnet_3(dsttcpport)
+        srcip = str(packet.payload.srcip)
+
+        log.debug(
+            "\n\nSEND FROM H3:\n" + str(packet) + "\n" + str(packet.payload) + "\n" + str(
+                packet.payload.payload) + "\n")
 
         packet.payload.payload.dstport = int(dsttcpport)
         packet.payload.dstip = IPAddr(dstip)
         packet.src = EthAddr(self.router_mac_address)
         packet.dst = EthAddr(self.arp_cache[dstip])
-        log.debug(
-            "\n\nSEND FROM H3:\n" + str(packet) + "\n" + str(packet.payload) + "\n" + str(
-                packet.payload.payload) + "\n")
         self.resend_packet(packet, self.ip_to_port[dstip])
+
+        # Install flow
+        msg = of.ofp_flow_mod()
+        # msg.data = packet_in
+        msg.priority = 1
+        msg.match.dl_type = pkt.ethernet.IP_TYPE
+        msg.match.nw_proto = pkt.ipv4.TCP_PROTOCOL
+        msg.match.nw_src = IPAddr(srcip)
+        msg.match.nw_dst = IPAddr("10.0.3.90")
+        msg.match.tp_dst = packet.payload.payload.dstport
+        msg.actions.append(of.ofp_action_tp_port.set_dst(dsttcpport))
+        msg.actions.append(of.ofp_action_nw_addr.set_dst(IPAddr(dstip)))
+        msg.actions.append(of.ofp_action_dl_addr.set_src(packet.src))
+        msg.actions.append(of.ofp_action_dl_addr.set_dst(packet.dst))
+        msg.actions.append(of.ofp_action_output(port=self.ip_to_port[dstip]))
+        self.connection.send(msg)
 
     # Apply PAT (Port Address Translation)
     def send_tcp_ip_packet_to_subnet_3(self, packet_object, dstip):
@@ -302,6 +319,22 @@ class Router(object):
         log.debug(
             "\n\nSEND TO H3:\n" + str(packet) + "\n" + str(packet.payload) + "\n" + str(packet.payload.payload) + "\n")
         self.resend_packet(packet, self.ip_to_port[dstip])
+
+        # Install flow
+        msg = of.ofp_flow_mod()
+        # msg.data = packet_in
+        msg.priority = 1
+        msg.match.dl_type = pkt.ethernet.IP_TYPE
+        msg.match.nw_proto = pkt.ipv4.TCP_PROTOCOL
+        msg.match.nw_src = IPAddr(srcip)
+        msg.match.nw_dst = IPAddr(dstip)
+        msg.match.tp_src = packet.payload.payload.srcport
+        msg.actions.append(of.ofp_action_tp_port.set_src(self.get_tcp_port_to_subnet_3(srcip, srctpcport)))
+        msg.actions.append(of.ofp_action_nw_addr.set_src(IPAddr("10.0.3.90")))
+        msg.actions.append(of.ofp_action_dl_addr.set_src(packet.src))
+        msg.actions.append(of.ofp_action_dl_addr.set_dst(packet.dst))
+        msg.actions.append(of.ofp_action_output(port=self.ip_to_port[dstip]))
+        self.connection.send(msg)
 
     @staticmethod
     def is_to_subnet(dstip, subnet):
@@ -329,7 +362,7 @@ class Router(object):
         # Checks if is a TCP packet from H3
         elif packet.payload.protocol == pkt.ipv4.TCP_PROTOCOL and self.is_from_subnet(packet.payload.srcip, 3):
             log.debug("----- Receive packet from H3 %s to %s" % (str(packet.payload.srcip), str(packet.payload.dstip)))
-            self.send_tcp_ip_packet_from_subnet_3(packet_object, dstip)
+            self.send_tcp_ip_packet_from_subnet_3(packet_object)
         else:
             dstip = str(dstip)
             packet.scr = EthAddr(self.router_mac_address)
@@ -347,19 +380,63 @@ class Router(object):
             # self.connection.send(msg)
 
     # Firewall
-    @staticmethod
-    def ip_inbox_firewall(packet):
+    def ip_inbox_firewall(self, packet):
         if packet.payload.protocol == pkt.ipv4.TCP_PROTOCOL:
             if (packet.payload.payload.dstport == 80
                     and IPAddr(packet.payload.dstip).inNetwork(IPAddr(route_table[2]['subnetIP']), 24)
                     and (IPAddr(packet.payload.srcip).inNetwork(IPAddr(route_table[1]['subnetIP']), 24)
                          or IPAddr(packet.payload.srcip).inNetwork(IPAddr(route_table[3]['subnetIP']), 24))):
+                # Install flow #1
+                msg = of.ofp_flow_mod()
+                msg.priority = 1
+                msg.match.dl_type = pkt.ethernet.IP_TYPE
+                msg.match.nw_proto = pkt.ipv4.TCP_PROTOCOL
+                msg.match.nw_src = IPAddr("10.0.1.100")
+                msg.match.nw_dst = IPAddr("10.0.2.100")
+                msg.match.tp_dst = 80
+                self.connection.send(msg)
+                # Install flow #2
+                msg = of.ofp_flow_mod()
+                msg.priority = 1
+                msg.match.dl_type = pkt.ethernet.IP_TYPE
+                msg.match.nw_proto = pkt.ipv4.TCP_PROTOCOL
+                msg.match.nw_src = IPAddr("10.0.3.100")
+                msg.match.nw_dst = IPAddr("10.0.2.100")
+                msg.match.tp_dst = 80
+                self.connection.send(msg)
                 return True
             if (packet.payload.payload.dstport == 5001
                     and IPAddr(packet.payload.srcip).inNetwork(IPAddr(route_table[3]['subnetIP']), 24)
                     and (str(packet.payload.dstip) == "10.0.3.90"
                          or IPAddr(packet.payload.dstip).inNetwork(IPAddr(route_table[1]['subnetIP']), 24)
                          or IPAddr(packet.payload.dstip).inNetwork(IPAddr(route_table[2]['subnetIP']), 24))):
+                # Install flow #1
+                msg = of.ofp_flow_mod()
+                msg.priority = 1
+                msg.match.dl_type = pkt.ethernet.IP_TYPE
+                msg.match.nw_proto = pkt.ipv4.TCP_PROTOCOL
+                msg.match.nw_src = IPAddr("10.0.3.100")
+                msg.match.nw_dst = IPAddr("10.0.1.100")
+                msg.match.tp_dst = 5001
+                self.connection.send(msg)
+                # Install flow #2
+                msg = of.ofp_flow_mod()
+                msg.priority = 1
+                msg.match.dl_type = pkt.ethernet.IP_TYPE
+                msg.match.nw_proto = pkt.ipv4.TCP_PROTOCOL
+                msg.match.nw_src = IPAddr("10.0.3.100")
+                msg.match.nw_dst = IPAddr("10.0.2.100")
+                msg.match.tp_dst = 5001
+                self.connection.send(msg)
+                # Install flow #3
+                msg = of.ofp_flow_mod()
+                msg.priority = 1
+                msg.match.dl_type = pkt.ethernet.IP_TYPE
+                msg.match.nw_proto = pkt.ipv4.TCP_PROTOCOL
+                msg.match.nw_src = IPAddr("10.0.3.100")
+                msg.match.nw_dst = IPAddr("10.0.3.90")
+                msg.match.tp_dst = 5001
+                self.connection.send(msg)
                 return True
         return False
 
@@ -367,7 +444,7 @@ class Router(object):
     def ip_inbox_handler(self, packet, packet_in):
         if self.ip_inbox_firewall(packet):
             return
-            # Checks if a given IP is unreachable
+        # Checks if a given IP is unreachable
         if not self.ip_is_reachable(str(packet.payload.dstip)):
             self.icmp_unreachable(packet, packet_in)
         else:
