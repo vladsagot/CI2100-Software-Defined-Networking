@@ -347,13 +347,27 @@ class Router(object):
             # self.connection.send(msg)
 
     # Firewall
-    def ip_inbox_firewall(self, packet, packet_in):
-        return
+    @staticmethod
+    def ip_inbox_firewall(packet):
+        if packet.payload.protocol == pkt.ipv4.TCP_PROTOCOL:
+            if (packet.payload.payload.dstport == 80
+                    and IPAddr(packet.payload.dstip).inNetwork(IPAddr(route_table[2]['subnetIP']), 24)
+                    and (IPAddr(packet.payload.srcip).inNetwork(IPAddr(route_table[1]['subnetIP']), 24)
+                         or IPAddr(packet.payload.srcip).inNetwork(IPAddr(route_table[3]['subnetIP']), 24))):
+                return True
+            if (packet.payload.payload.dstport == 5001
+                    and IPAddr(packet.payload.srcip).inNetwork(IPAddr(route_table[3]['subnetIP']), 24)
+                    and (str(packet.payload.dstip) == "10.0.3.90"
+                         or IPAddr(packet.payload.dstip).inNetwork(IPAddr(route_table[1]['subnetIP']), 24)
+                         or IPAddr(packet.payload.dstip).inNetwork(IPAddr(route_table[2]['subnetIP']), 24))):
+                return True
+        return False
 
     # Using IPV4 packet payload
     def ip_inbox_handler(self, packet, packet_in):
-        self.ip_inbox_firewall(packet, packet_in)
-        # Checks if a given IP is unreachable
+        if self.ip_inbox_firewall(packet):
+            return
+            # Checks if a given IP is unreachable
         if not self.ip_is_reachable(str(packet.payload.dstip)):
             self.icmp_unreachable(packet, packet_in)
         else:
